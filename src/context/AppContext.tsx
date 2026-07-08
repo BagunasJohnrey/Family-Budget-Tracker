@@ -1,7 +1,7 @@
 import { createContext, useContext, useEffect, useReducer, useCallback, useMemo, useRef, useState, type ReactNode } from 'react'
 import toast from 'react-hot-toast'
 import { isSupabaseConfigured, fetchCategories as fetchRemoteCategories, fetchExpenses as fetchRemoteExpenses, fetchProfiles as fetchRemoteProfiles, fetchRevenues as fetchRemoteRevenues, createCategory as dbCreateCategory, updateCategory as dbUpdateCategory, deleteCategory as dbDeleteCategory, createExpense as dbCreateExpense, updateExpense as dbUpdateExpense, deleteExpense as dbDeleteExpense, createProfile as dbCreateProfile, deleteProfile as dbDeleteProfile, createRevenue as dbCreateRevenue, deleteRevenue as dbDeleteRevenue, createNotification as dbCreateNotification } from '../lib/supabase'
-import { loadCategories, saveCategories, loadExpenses, saveExpenses, loadProfiles, saveProfiles, loadRevenues, saveRevenues, getLastSyncTime, setLastSyncTime } from '../lib/storage'
+import { loadCategories, saveCategories, loadExpenses, saveExpenses, loadProfiles, saveProfiles, loadRevenues, saveRevenues, getLastSyncTime, setLastSyncTime, clearAllData } from '../lib/storage'
 import { useAuth } from './AuthContext'
 import type { AppState, Category, Expense, Profile, NewExpenseInput, Revenue, NewRevenueInput, SortField, SortDirection } from '../types'
 import { getDaysInMonth } from '../lib/utils'
@@ -108,6 +108,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [state, dispatch] = useReducer(reducer, initialState)
   const { user } = useAuth()
   const isSyncingRef = useRef(false)
+  const prevUserIdRef = useRef('')
 
   const userId = user?.id ?? ''
   const [isConnected, setIsConnected] = useState(navigator.onLine)
@@ -136,6 +137,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   // ─── Init: load local immediately, then try remote ──────
   useEffect(() => {
+    if (!userId) {
+      dispatch({ type: 'SET_LOADING', payload: false })
+      return
+    }
+
+    const prevUserId = prevUserIdRef.current
+    prevUserIdRef.current = userId
+
+    if (prevUserId && prevUserId !== userId) {
+      clearAllData()
+    }
+
     const localCats = loadCategories()
     const localExps = loadExpenses()
     const localProfiles = loadProfiles()
@@ -147,7 +160,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
     if (localProfiles.length > 0) {
       dispatch({ type: 'SET_PROFILES', payload: localProfiles })
-    } else if (userId && user?.email) {
+    } else if (user?.email) {
       const displayName = user.email.split('@')[0]
       const id = crypto.randomUUID()
       const profile: Profile = { id, user_id: userId, display_name: displayName, created_at: new Date().toISOString() }
@@ -159,11 +172,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       dispatch({ type: 'SET_REVENUES', payload: localRevs })
     }
 
-    if (userId) {
-      connectSupabase()
-    } else {
-      dispatch({ type: 'SET_LOADING', payload: false })
-    }
+    connectSupabase()
   }, [userId])
 
   // ─── Shared merge (push local → remote, pull remote → local) ──

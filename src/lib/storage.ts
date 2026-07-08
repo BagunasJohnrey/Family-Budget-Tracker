@@ -56,3 +56,11 @@ export function getLastSyncTime(): number | null {
 export function setLastSyncTime(): void {
   write('budget_last_sync', Date.now())
 }
+
+const STORAGE_KEYS = ['budget_categories', 'budget_expenses', 'budget_profiles', 'barber_revenues', 'budget_last_sync'] as const
+
+export function clearAllData(): void {
+  for (const key of STORAGE_KEYS) {
+    localStorage.removeItem(key)
+  }
+}
