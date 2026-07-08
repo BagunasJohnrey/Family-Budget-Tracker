@@ -1,5 +1,5 @@
 import { createClient } from '@supabase/supabase-js'
-import type { Category, Expense, Profile, Revenue, NewRevenueInput } from '../types'
+import type { Category, Expense, Profile, Revenue, NewRevenueInput, Family, FamilyMember } from '../types'
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || ''
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || ''
@@ -43,21 +43,86 @@ export function onAuthChange(callback: (event: string, user: import('@supabase/s
   })
 }
 
+// ─── Families ──────────────────────────────────────────────
+function generateFamilyCode(): string {
+  return Math.random().toString(36).substring(2, 8).toUpperCase()
+}
+
+export async function createFamily(name: string, createdBy: string): Promise<Family> {
+  const code = generateFamilyCode()
+  const { data: family, error: famErr } = await supabase
+    .from('families')
+    .insert({ name, code, created_by: createdBy })
+    .select()
+    .single()
+  if (famErr) throw famErr
+
+  const { error: memErr } = await supabase
+    .from('family_members')
+    .insert({ family_id: family.id, user_id: createdBy, role: 'admin' })
+  if (memErr) throw memErr
+
+  return family
+}
+
+export async function joinFamily(code: string, userId: string): Promise<Family> {
+  const { data: family, error: findErr } = await supabase
+    .from('families')
+    .select('*')
+    .eq('code', code.toUpperCase())
+    .single()
+  if (findErr) throw new Error('Invalid family code')
+
+  const { error: memErr } = await supabase
+    .from('family_members')
+    .insert({ family_id: family.id, user_id: userId, role: 'member' })
+  if (memErr) throw memErr
+
+  return family
+}
+
+export async function fetchUserFamily(userId: string): Promise<Family | null> {
+  const { data: members } = await supabase
+    .from('family_members')
+    .select('family_id')
+    .eq('user_id', userId)
+    .maybeSingle()
+
+  if (!members) return null
+
+  const { data: family } = await supabase
+    .from('families')
+    .select('*')
+    .eq('id', members.family_id)
+    .single()
+
+  return family
+}
+
+export async function fetchFamilyMembers(familyId: string): Promise<FamilyMember[]> {
+  const { data, error } = await supabase
+    .from('family_members')
+    .select('*')
+    .eq('family_id', familyId)
+  if (error) throw error
+  return data ?? []
+}
+
 // ─── Profiles ──────────────────────────────────────────────
-export async function fetchProfiles(userId: string): Promise<Profile[]> {
+export async function fetchProfiles(familyId: string): Promise<Profile[]> {
   const { data, error } = await supabase
     .from('profiles')
     .select('*')
-    .eq('user_id', userId)
+    .eq('family_id', familyId)
     .order('display_name')
   if (error) throw error
   return data ?? []
 }
 
-export async function createProfile(userId: string, id: string, displayName: string): Promise<Profile> {
+export async function createProfile(userId: string, familyId: string, id: string, displayName: string): Promise<Profile> {
   const { data, error } = await supabase
     .from('profiles')
-    .insert({ id, user_id: userId, display_name: displayName })
+    .insert({ id, user_id: userId, family_id: familyId, display_name: displayName })
     .select()
     .single()
   if (error) throw error
@@ -73,21 +138,21 @@ export async function deleteProfile(profileId: string): Promise<void> {
 }
 
 // ─── Revenues ───────────────────────────────────────────────
-export async function fetchRevenues(userId: string): Promise<Revenue[]> {
+export async function fetchRevenues(familyId: string): Promise<Revenue[]> {
   const { data, error } = await supabase
     .from('revenues')
     .select('*')
-    .eq('user_id', userId)
+    .eq('family_id', familyId)
     .order('date', { ascending: false })
   if (error) throw error
   return data ?? []
 }
 
-export async function createRevenue(userId: string, id: string, input: NewRevenueInput): Promise<Revenue> {
+export async function createRevenue(userId: string, familyId: string, id: string, input: NewRevenueInput): Promise<Revenue> {
   const { data, error } = await supabase
     .from('revenues')
     .insert({
-      id, user_id: userId,
+      id, user_id: userId, family_id: familyId,
       amount: input.amount,
       service: input.service,
       client_name: input.client_name,
@@ -109,20 +174,20 @@ export async function deleteRevenue(revId: string): Promise<void> {
 }
 
 // ─── Categories ────────────────────────────────────────────
-export async function fetchCategories(userId: string): Promise<Category[]> {
+export async function fetchCategories(familyId: string): Promise<Category[]> {
   const { data, error } = await supabase
     .from('categories')
     .select('*')
-    .eq('user_id', userId)
+    .eq('family_id', familyId)
     .order('name')
   if (error) throw error
   return data ?? []
 }
 
-export async function createCategory(userId: string, id: string, input: { name: string; color: string }): Promise<Category> {
+export async function createCategory(userId: string, familyId: string, id: string, input: { name: string; color: string }): Promise<Category> {
   const { data, error } = await supabase
     .from('categories')
-    .insert({ id, user_id: userId, name: input.name, color: input.color })
+    .insert({ id, user_id: userId, family_id: familyId, name: input.name, color: input.color })
     .select()
     .single()
   if (error) throw error
@@ -149,17 +214,17 @@ export async function deleteCategory(catId: string): Promise<void> {
 }
 
 // ─── Expenses ──────────────────────────────────────────────
-export async function fetchExpenses(userId: string): Promise<Expense[]> {
+export async function fetchExpenses(familyId: string): Promise<Expense[]> {
   const { data, error } = await supabase
     .from('expenses')
     .select('*')
-    .eq('user_id', userId)
+    .eq('family_id', familyId)
     .order('date', { ascending: false })
   if (error) throw error
   return data ?? []
 }
 
-export async function createExpense(userId: string, id: string, input: {
+export async function createExpense(userId: string, familyId: string, id: string, input: {
   title: string
   amount: number
   category_id: string
@@ -171,7 +236,7 @@ export async function createExpense(userId: string, id: string, input: {
   const { data, error } = await supabase
     .from('expenses')
     .insert({
-      id, user_id: userId,
+      id, user_id: userId, family_id: familyId,
       title: input.title,
       amount: input.amount,
       category_id: input.category_id,
@@ -206,10 +271,10 @@ export async function deleteExpense(expId: string): Promise<void> {
 }
 
 // ─── Notifications ──────────────────────────────────────────
-export async function createNotification(userId: string, message: string): Promise<void> {
+export async function createNotification(userId: string, familyId: string, message: string): Promise<void> {
   const { error } = await supabase
     .from('notifications')
-    .insert({ user_id: userId, message })
+    .insert({ user_id: userId, family_id: familyId, message })
   if (error) throw error
 }
 

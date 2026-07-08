@@ -1,6 +1,23 @@
+export interface Family {
+  id: string
+  name: string
+  code: string
+  created_by: string
+  created_at: string
+}
+
+export interface FamilyMember {
+  id: string
+  family_id: string
+  user_id: string
+  role: 'admin' | 'member'
+  created_at: string
+}
+
 export interface Category {
   id: string
   user_id: string
+  family_id: string
   name: string
   color: string
   budget: number | null
@@ -10,6 +27,7 @@ export interface Category {
 export interface Expense {
   id: string
   user_id: string
+  family_id: string
   title: string
   amount: number
   category_id: string
@@ -39,6 +57,7 @@ export interface NewExpenseInput {
 export interface Profile {
   id: string
   user_id: string
+  family_id: string
   display_name: string
   created_at: string
 }
@@ -46,6 +65,7 @@ export interface Profile {
 export interface Revenue {
   id: string
   user_id: string
+  family_id: string
   amount: number
   service: string
   client_name: string

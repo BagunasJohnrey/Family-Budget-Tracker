@@ -1,7 +1,7 @@
 import { createContext, useContext, useEffect, useReducer, useCallback, useMemo, useRef, useState, type ReactNode } from 'react'
 import toast from 'react-hot-toast'
-import { isSupabaseConfigured, fetchCategories as fetchRemoteCategories, fetchExpenses as fetchRemoteExpenses, fetchProfiles as fetchRemoteProfiles, fetchRevenues as fetchRemoteRevenues, createCategory as dbCreateCategory, updateCategory as dbUpdateCategory, deleteCategory as dbDeleteCategory, createExpense as dbCreateExpense, updateExpense as dbUpdateExpense, deleteExpense as dbDeleteExpense, createProfile as dbCreateProfile, deleteProfile as dbDeleteProfile, createRevenue as dbCreateRevenue, deleteRevenue as dbDeleteRevenue, createNotification as dbCreateNotification } from '../lib/supabase'
-import { loadCategories, saveCategories, loadExpenses, saveExpenses, loadProfiles, saveProfiles, loadRevenues, saveRevenues, getLastSyncTime, setLastSyncTime, clearAllData } from '../lib/storage'
+import { isSupabaseConfigured, fetchCategories as fetchRemoteCategories, fetchExpenses as fetchRemoteExpenses, fetchProfiles as fetchRemoteProfiles, fetchRevenues as fetchRemoteRevenues, createCategory as dbCreateCategory, updateCategory as dbUpdateCategory, deleteCategory as dbDeleteCategory, createExpense as dbCreateExpense, updateExpense as dbUpdateExpense, deleteExpense as dbDeleteExpense, createProfile as dbCreateProfile, deleteProfile as dbDeleteProfile, createRevenue as dbCreateRevenue, deleteRevenue as dbDeleteRevenue, createNotification as dbCreateNotification, createFamily as dbCreateFamily, joinFamily as dbJoinFamily, fetchUserFamily } from '../lib/supabase'
+import { loadCategories, saveCategories, loadExpenses, saveExpenses, saveProfiles, loadRevenues, saveRevenues, getLastSyncTime, setLastSyncTime, clearAllData, getCachedFamilyId, setCachedFamilyId } from '../lib/storage'
 import { useAuth } from './AuthContext'
 import type { AppState, Category, Expense, Profile, NewExpenseInput, Revenue, NewRevenueInput, SortField, SortDirection } from '../types'
 import { getDaysInMonth } from '../lib/utils'
@@ -74,6 +74,12 @@ interface AppContextType {
   state: AppState
   dispatch: React.Dispatch<Action>
   userId: string
+  familyId: string
+  familyName: string
+  familyCode: string
+  needsFamilySetup: boolean
+  createFamily: (name: string) => Promise<void>
+  joinFamily: (code: string) => Promise<void>
   isConnected: boolean
   isSyncing: boolean
   lastSyncAt: number | null
@@ -111,9 +117,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const prevUserIdRef = useRef('')
 
   const userId = user?.id ?? ''
+  const [familyId, setFamilyId] = useState('')
+  const [familyName, setFamilyName] = useState('')
+  const [familyCode, setFamilyCode] = useState('')
+  const [needsFamilySetup, setNeedsFamilySetup] = useState(false)
   const [isConnected, setIsConnected] = useState(navigator.onLine)
   const [isSyncing, setIsSyncing] = useState(false)
   const [lastSyncAt, setLastSyncAt] = useState<number | null>(getLastSyncTime())
+
   interface NotificationItem {
     text: string
     time: string
@@ -125,17 +136,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const item: NotificationItem = { text: msg, time }
     setNotifications(prev => [item, ...prev].slice(0, 50))
     setNotificationsRead(prev => prev)
-    if (userId) {
-      dbCreateNotification(userId, msg).catch(() => {})
+    if (userId && familyId) {
+      dbCreateNotification(userId, familyId, msg).catch(() => {})
     }
-  }, [userId])
+  }, [userId, familyId])
   const markNotificationsRead = useCallback(() => {
     setNotificationsRead(notifications.length)
   }, [notifications.length])
 
   isSyncingRef.current = isSyncing
 
-  // ─── Init: load local immediately, then try remote ──────
+  // ─── Init: resolve family, then load data ────────────────
   useEffect(() => {
     if (!userId) {
       dispatch({ type: 'SET_LOADING', payload: false })
@@ -149,39 +160,51 @@ export function AppProvider({ children }: { children: ReactNode }) {
       clearAllData()
     }
 
-    const localCats = loadCategories()
-    const localExps = loadExpenses()
-    const localProfiles = loadProfiles()
-    const localRevs = loadRevenues()
-
-    if (localCats.length > 0 || localExps.length > 0) {
-      dispatch({ type: 'SET_CATEGORIES', payload: localCats })
-      dispatch({ type: 'SET_EXPENSES', payload: localExps })
-    }
-    if (localProfiles.length > 0) {
-      dispatch({ type: 'SET_PROFILES', payload: localProfiles })
-    } else if (user?.email) {
-      const displayName = user.email.split('@')[0]
-      const id = crypto.randomUUID()
-      const profile: Profile = { id, user_id: userId, display_name: displayName, created_at: new Date().toISOString() }
-      saveProfiles([profile])
-      dispatch({ type: 'SET_PROFILES', payload: [profile] })
-      dbCreateProfile(userId, id, displayName).catch(() => {})
-    }
-    if (localRevs.length > 0) {
-      dispatch({ type: 'SET_REVENUES', payload: localRevs })
+    const cached = getCachedFamilyId()
+    if (cached) {
+      setFamilyId(cached)
     }
 
-    connectSupabase()
+    resolveFamily()
+
+    async function resolveFamily() {
+      if (!isSupabaseConfigured()) {
+        dispatch({ type: 'SET_LOADING', payload: false })
+        return
+      }
+
+      try {
+        const family = await fetchUserFamily(userId)
+        if (family) {
+          setFamilyId(family.id)
+          setFamilyName(family.name)
+          setFamilyCode(family.code)
+          setCachedFamilyId(family.id)
+          setNeedsFamilySetup(false)
+        } else {
+          setNeedsFamilySetup(true)
+          dispatch({ type: 'SET_LOADING', payload: false })
+          return
+        }
+      } catch {
+        if (!cached) {
+          setNeedsFamilySetup(true)
+          dispatch({ type: 'SET_LOADING', payload: false })
+          return
+        }
+      }
+
+      connectSupabase()
+    }
   }, [userId])
 
   // ─── Shared merge (push local → remote, pull remote → local) ──
   async function mergeRemote() {
-    if (!userId || !isSupabaseConfigured()) return
+    if (!userId || !familyId || !isSupabaseConfigured()) return
 
-    const localCats = loadCategories()
-    const localExps = loadExpenses()
-    const localRevs = loadRevenues()
+    const localCats = loadCategories(familyId)
+    const localExps = loadExpenses(familyId)
+    const localRevs = loadRevenues(familyId)
 
     let hasErrors = false
     const logError = (label: string, err: unknown) => {
@@ -194,10 +217,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
       fn().catch(err => { logError(label, err); return [] })
 
     const [remoteCats, remoteExps, remoteProfiles, remoteRevs] = await Promise.all([
-      safeFetch('categories', () => fetchRemoteCategories(userId)),
-      safeFetch('expenses', () => fetchRemoteExpenses(userId)),
-      safeFetch('profiles', () => fetchRemoteProfiles(userId)),
-      safeFetch('revenues', () => fetchRemoteRevenues(userId)),
+      safeFetch('categories', () => fetchRemoteCategories(familyId)),
+      safeFetch('expenses', () => fetchRemoteExpenses(familyId)),
+      safeFetch('profiles', () => fetchRemoteProfiles(familyId)),
+      safeFetch('revenues', () => fetchRemoteRevenues(familyId)),
     ])
 
     if (!hasErrors) setIsConnected(true)
@@ -211,13 +234,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
     for (const cat of localCats) {
       if (!remoteCatIds.has(cat.id)) {
-        try { await dbCreateCategory(userId, cat.id, { name: cat.name, color: cat.color }) } catch (e) { logError('push category', e) }
+        try { await dbCreateCategory(userId, familyId, cat.id, { name: cat.name, color: cat.color }) } catch (e) { logError('push category', e) }
       }
     }
     for (const exp of localExps) {
       if (!remoteExpIds.has(exp.id)) {
         try {
-          await dbCreateExpense(userId, exp.id, {
+          await dbCreateExpense(userId, familyId, exp.id, {
             title: exp.title, amount: exp.amount,
             category_id: exp.category_id, date: exp.date,
             notes: exp.notes, is_recurring: exp.is_recurring,
@@ -228,7 +251,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
     for (const rev of localRevs) {
       if (!remoteRevIds.has(rev.id)) {
-        try { await dbCreateRevenue(userId, rev.id, { amount: rev.amount, service: rev.service, client_name: rev.client_name, date: rev.date, notes: rev.notes }) } catch (e) { logError('push revenue', e) }
+        try { await dbCreateRevenue(userId, familyId, rev.id, { amount: rev.amount, service: rev.service, client_name: rev.client_name, date: rev.date, notes: rev.notes }) } catch (e) { logError('push revenue', e) }
       }
     }
 
@@ -245,10 +268,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (!localRevIds.has(rev.id)) mergedRevs.push(rev)
     }
 
-    saveCategories(mergedCats)
-    saveExpenses(mergedExps)
-    saveProfiles(remoteProfiles)
-    saveRevenues(mergedRevs)
+    saveCategories(mergedCats, familyId)
+    saveExpenses(mergedExps, familyId)
+    saveProfiles(remoteProfiles, familyId)
+    saveRevenues(mergedRevs, familyId)
     dispatch({ type: 'SET_CATEGORIES', payload: mergedCats })
     dispatch({ type: 'SET_EXPENSES', payload: mergedExps })
     dispatch({ type: 'SET_PROFILES', payload: remoteProfiles })
@@ -259,7 +282,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }
 
   async function connectSupabase() {
-    if (!isSupabaseConfigured() || !userId) {
+    if (!isSupabaseConfigured() || !userId || !familyId) {
       dispatch({ type: 'SET_LOADING', payload: false })
       return
     }
@@ -278,6 +301,33 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   }
 
+  // ─── Family actions ─────────────────────────────────────
+  const createFamily = useCallback(async (name: string) => {
+    if (!userId) return
+    const family = await dbCreateFamily(name, userId)
+    setFamilyId(family.id)
+    setFamilyName(family.name)
+    setFamilyCode(family.code)
+    setCachedFamilyId(family.id)
+    setNeedsFamilySetup(false)
+    await mergeRemote()
+    toast.success(`Family "${family.name}" created! Code: ${family.code}`)
+    addNotification(`Family "${family.name}" created`)
+  }, [userId, addNotification])
+
+  const joinFamily = useCallback(async (code: string) => {
+    if (!userId) return
+    const family = await dbJoinFamily(code, userId)
+    setFamilyId(family.id)
+    setFamilyName(family.name)
+    setFamilyCode(family.code)
+    setCachedFamilyId(family.id)
+    setNeedsFamilySetup(false)
+    await mergeRemote()
+    toast.success(`Joined "${family.name}"!`)
+    addNotification(`Joined family "${family.name}"`)
+  }, [userId, addNotification])
+
   // ─── Dark mode ──────────────────────────────────────────
   useEffect(() => {
     document.documentElement.classList.toggle('dark', state.isDarkMode)
@@ -287,7 +337,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     function handleOnline() {
       setIsConnected(true)
-      if (userId) {
+      if (userId && familyId) {
         syncNow()
       }
     }
@@ -300,11 +350,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
       window.removeEventListener('online', handleOnline)
       window.removeEventListener('offline', handleOffline)
     }
-  }, [userId])
+  }, [userId, familyId])
 
   // ─── Sync now (manual) ──────────────────────────────────
   const syncNow = useCallback(async () => {
-    if (isSyncingRef.current || !userId) return
+    if (isSyncingRef.current || !userId || !familyId) return
     setIsSyncing(true)
 
     try {
@@ -322,47 +372,47 @@ export function AppProvider({ children }: { children: ReactNode }) {
     } finally {
       setIsSyncing(false)
     }
-  }, [userId])
+  }, [userId, familyId, addNotification])
 
   // ─── Mutations ──────────────────────────────────────────
   const addCategory = useCallback(async (name: string, color: string, budget?: number | null) => {
-    if (!userId) return
+    if (!userId || !familyId) return
     const id = crypto.randomUUID()
     const now = new Date().toISOString()
-    const cat: Category = { id, user_id: userId, name, color, budget: budget ?? null, created_at: now }
+    const cat: Category = { id, user_id: userId, family_id: familyId, name, color, budget: budget ?? null, created_at: now }
     const updated = [...state.categories, cat]
-    saveCategories(updated)
+    saveCategories(updated, familyId)
     dispatch({ type: 'SET_CATEGORIES', payload: updated })
-    try { await dbCreateCategory(userId, id, { name, color }) } catch (e) { console.error('db createCategory', e) }
+    try { await dbCreateCategory(userId, familyId, id, { name, color }) } catch (e) { console.error('db createCategory', e) }
     toast.success('Category created')
     addNotification(`Category "${name}" created`)
-  }, [state.categories, userId, addNotification])
+  }, [state.categories, userId, familyId, addNotification])
 
   const deleteCategoryAction = useCallback(async (catId: string) => {
     const linked = state.expenses.some(e => e.category_id === catId)
     if (linked) { toast.error('Has linked expenses'); return }
     const updated = state.categories.filter(c => c.id !== catId)
-    saveCategories(updated)
+    saveCategories(updated, familyId)
     dispatch({ type: 'SET_CATEGORIES', payload: updated })
     try { await dbDeleteCategory(catId) } catch (e) { console.error('db deleteCategory', e) }
     toast.success('Category deleted')
-  }, [state.categories, state.expenses])
+  }, [state.categories, state.expenses, familyId])
 
   const editCategory = useCallback(async (catId: string, name: string, color: string, budget?: number | null) => {
     const updated = state.categories.map(c => c.id === catId ? { ...c, name, color, budget: budget ?? null } : c)
-    saveCategories(updated)
+    saveCategories(updated, familyId)
     dispatch({ type: 'SET_CATEGORIES', payload: updated })
     try { await dbUpdateCategory(catId, { name, color, budget: budget ?? null }) } catch (e) { console.error('db updateCategory', e) }
     toast.success('Category updated')
     addNotification(`Category updated to "${name}"`)
-  }, [state.categories, addNotification])
+  }, [state.categories, familyId, addNotification])
 
   const addExpense = useCallback(async (input: NewExpenseInput) => {
-    if (!userId) return
+    if (!userId || !familyId) return
     const id = crypto.randomUUID()
     const now = new Date().toISOString()
     const exp: Expense = {
-      id, user_id: userId,
+      id, user_id: userId, family_id: familyId,
       title: input.title, amount: input.amount,
       category_id: input.category_id, date: input.date,
       notes: input.notes ?? '', is_recurring: input.is_recurring ?? false,
@@ -370,52 +420,52 @@ export function AppProvider({ children }: { children: ReactNode }) {
       created_at: now,
     }
     const updated = [exp, ...state.expenses]
-    saveExpenses(updated)
+    saveExpenses(updated, familyId)
     dispatch({ type: 'SET_EXPENSES', payload: updated })
-    try { await dbCreateExpense(userId, id, input) } catch (e) { console.error('db createExpense', e) }
+    try { await dbCreateExpense(userId, familyId, id, input) } catch (e) { console.error('db createExpense', e) }
     toast.success('Expense added')
     addNotification(`"${input.title}" — ₱${input.amount.toLocaleString()}`)
-  }, [state.expenses, userId, addNotification])
+  }, [state.expenses, userId, familyId, addNotification])
 
   const editExpense = useCallback(async (id: string, input: Partial<NewExpenseInput>) => {
     const updated = state.expenses.map(e => e.id === id ? { ...e, ...input } : e)
-    saveExpenses(updated)
+    saveExpenses(updated, familyId)
     dispatch({ type: 'SET_EXPENSES', payload: updated })
     try { await dbUpdateExpense(id, input) } catch (e) { console.error('db updateExpense', e) }
     toast.success('Expense updated')
     addNotification('Expense updated')
-  }, [state.expenses, addNotification])
+  }, [state.expenses, familyId, addNotification])
 
   const removeExpense = useCallback(async (id: string) => {
     const updated = state.expenses.filter(e => e.id !== id)
-    saveExpenses(updated)
+    saveExpenses(updated, familyId)
     dispatch({ type: 'SET_EXPENSES', payload: updated })
     try { await dbDeleteExpense(id) } catch (e) { console.error('db deleteExpense', e) }
     toast.success('Expense deleted')
     addNotification('Expense deleted')
-  }, [state.expenses, addNotification])
+  }, [state.expenses, familyId, addNotification])
 
   // ─── Members ─────────────────────────────────────────────
   const addMember = useCallback(async (displayName: string) => {
-    if (!userId) return
+    if (!userId || !familyId) return
     const id = crypto.randomUUID()
-    const profile: Profile = { id, user_id: userId, display_name: displayName, created_at: new Date().toISOString() }
+    const profile: Profile = { id, user_id: userId, family_id: familyId, display_name: displayName, created_at: new Date().toISOString() }
     const updated = [...state.profiles, profile]
-    saveProfiles(updated)
+    saveProfiles(updated, familyId)
     dispatch({ type: 'SET_PROFILES', payload: updated })
-    try { await dbCreateProfile(userId, id, displayName) } catch (e) { console.error('db createProfile', e) }
+    try { await dbCreateProfile(userId, familyId, id, displayName) } catch (e) { console.error('db createProfile', e) }
     toast.success(`Member "${displayName}" added`)
     addNotification(`Member "${displayName}" added`)
-  }, [state.profiles, userId, addNotification])
+  }, [state.profiles, userId, familyId, addNotification])
 
   const removeMember = useCallback(async (profileId: string) => {
     const profile = state.profiles.find(p => p.id === profileId)
     const updated = state.profiles.filter(p => p.id !== profileId)
-    saveProfiles(updated)
+    saveProfiles(updated, familyId)
     dispatch({ type: 'SET_PROFILES', payload: updated })
     try { await dbDeleteProfile(profileId) } catch (e) { console.error('db deleteProfile', e) }
     toast.success(`Member "${profile?.display_name}" removed`)
-  }, [state.profiles])
+  }, [state.profiles, familyId])
 
   const memberNames = useMemo(() => {
     return state.profiles.map(p => p.display_name)
@@ -423,11 +473,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   // ─── Revenue ──────────────────────────────────────────────
   const addRevenue = useCallback(async (input: NewRevenueInput) => {
-    if (!userId) return
+    if (!userId || !familyId) return
     const id = crypto.randomUUID()
     const now = new Date().toISOString()
     const rev: Revenue = {
-      id, user_id: userId,
+      id, user_id: userId, family_id: familyId,
       amount: input.amount,
       service: input.service,
       client_name: input.client_name,
@@ -436,21 +486,21 @@ export function AppProvider({ children }: { children: ReactNode }) {
       created_at: now,
     }
     const updated = [rev, ...state.revenues]
-    saveRevenues(updated)
+    saveRevenues(updated, familyId)
     dispatch({ type: 'SET_REVENUES', payload: updated })
-    try { await dbCreateRevenue(userId, id, input) } catch (e) { console.error('db createRevenue', e) }
+    try { await dbCreateRevenue(userId, familyId, id, input) } catch (e) { console.error('db createRevenue', e) }
     toast.success('Revenue added')
     addNotification(`Revenue: ₱${input.amount.toLocaleString()} — ${input.service}`)
-  }, [state.revenues, userId, addNotification])
+  }, [state.revenues, userId, familyId, addNotification])
 
   const removeRevenue = useCallback(async (id: string) => {
     const updated = state.revenues.filter(r => r.id !== id)
-    saveRevenues(updated)
+    saveRevenues(updated, familyId)
     dispatch({ type: 'SET_REVENUES', payload: updated })
     try { await dbDeleteRevenue(id) } catch (e) { console.error('db deleteRevenue', e) }
     toast.success('Revenue entry removed')
     addNotification('Revenue entry removed')
-  }, [state.revenues, addNotification])
+  }, [state.revenues, familyId, addNotification])
 
   // ─── Computed values ────────────────────────────────────
   const filteredExpenses = useMemo(() => {
@@ -527,7 +577,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
   return (
     <AppCtx.Provider
       value={{
-        state, dispatch, userId, isConnected, isSyncing, lastSyncAt, syncNow,
+        state, dispatch, userId, familyId, familyName, familyCode, needsFamilySetup,
+        createFamily, joinFamily,
+        isConnected, isSyncing, lastSyncAt, syncNow,
         addCategory, editCategory, deleteCategoryAction,
         addExpense, editExpense, removeExpense,
         addMember, removeMember, memberNames,
@@ -546,5 +598,3 @@ export function useApp() {
   if (!ctx) throw new Error('useApp must be used within AppProvider')
   return ctx
 }
-
-

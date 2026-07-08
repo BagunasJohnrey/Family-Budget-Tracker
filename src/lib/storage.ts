@@ -17,36 +17,40 @@ function write<T>(key: string, value: T): void {
   }
 }
 
-export function loadCategories(): Category[] {
-  return read<Category[]>('budget_categories', [])
+function scopeKey(key: string, familyId?: string): string {
+  return familyId ? `${key}_${familyId}` : key
 }
 
-export function saveCategories(cats: Category[]): void {
-  write('budget_categories', cats)
+export function loadCategories(familyId?: string): Category[] {
+  return read<Category[]>(scopeKey('budget_categories', familyId), [])
 }
 
-export function loadExpenses(): Expense[] {
-  return read<Expense[]>('budget_expenses', [])
+export function saveCategories(cats: Category[], familyId?: string): void {
+  write(scopeKey('budget_categories', familyId), cats)
 }
 
-export function saveExpenses(exps: Expense[]): void {
-  write('budget_expenses', exps)
+export function loadExpenses(familyId?: string): Expense[] {
+  return read<Expense[]>(scopeKey('budget_expenses', familyId), [])
 }
 
-export function loadProfiles(): Profile[] {
-  return read<Profile[]>('budget_profiles', [])
+export function saveExpenses(exps: Expense[], familyId?: string): void {
+  write(scopeKey('budget_expenses', familyId), exps)
 }
 
-export function saveProfiles(profiles: Profile[]): void {
-  write('budget_profiles', profiles)
+export function loadProfiles(familyId?: string): Profile[] {
+  return read<Profile[]>(scopeKey('budget_profiles', familyId), [])
 }
 
-export function loadRevenues(): Revenue[] {
-  return read<Revenue[]>('barber_revenues', [])
+export function saveProfiles(profiles: Profile[], familyId?: string): void {
+  write(scopeKey('budget_profiles', familyId), profiles)
 }
 
-export function saveRevenues(revs: Revenue[]): void {
-  write('barber_revenues', revs)
+export function loadRevenues(familyId?: string): Revenue[] {
+  return read<Revenue[]>(scopeKey('barber_revenues', familyId), [])
+}
+
+export function saveRevenues(revs: Revenue[], familyId?: string): void {
+  write(scopeKey('barber_revenues', familyId), revs)
 }
 
 export function getLastSyncTime(): number | null {
@@ -57,10 +61,28 @@ export function setLastSyncTime(): void {
   write('budget_last_sync', Date.now())
 }
 
-const STORAGE_KEYS = ['budget_categories', 'budget_expenses', 'budget_profiles', 'barber_revenues', 'budget_last_sync'] as const
+export function getCachedFamilyId(): string | null {
+  return read<string | null>('budget_family_id', null)
+}
+
+export function setCachedFamilyId(id: string | null): void {
+  if (id) {
+    write('budget_family_id', id)
+  } else {
+    localStorage.removeItem('budget_family_id')
+  }
+}
+
+const STORAGE_KEYS = ['budget_categories', 'budget_expenses', 'budget_profiles', 'barber_revenues', 'budget_last_sync', 'budget_family_id'] as const
 
 export function clearAllData(): void {
   for (const key of STORAGE_KEYS) {
-    localStorage.removeItem(key)
+    const prefix = key + '_'
+    for (let i = localStorage.length - 1; i >= 0; i--) {
+      const k = localStorage.key(i)
+      if (k === key || k?.startsWith(prefix)) {
+        localStorage.removeItem(k)
+      }
+    }
   }
 }

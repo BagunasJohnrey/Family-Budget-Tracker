@@ -1,5 +1,5 @@
 import { useState, useCallback } from 'react'
-import { Routes, Route } from 'react-router-dom'
+import { Routes, Route, Navigate } from 'react-router-dom'
 import { useApp } from './context/AppContext'
 import Header from './components/Header'
 import SummaryCards from './components/SummaryCards'
@@ -17,6 +17,7 @@ import AuthGuard from './components/AuthGuard'
 import LoginPage from './pages/LoginPage'
 import SignupPage from './pages/SignupPage'
 import ProfilesPage from './pages/ProfilesPage'
+import FamilySetup from './pages/FamilySetup'
 
 function Dashboard() {
   const { removeExpense } = useApp()
@@ -84,13 +85,38 @@ function Dashboard() {
   )
 }
 
+function ProtectedDashboard() {
+  const { state, needsFamilySetup, familyId } = useApp()
+
+  if (state.isLoading && !familyId) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-slate-50 dark:bg-slate-900">
+        <div className="flex flex-col items-center space-y-3">
+          <svg className="w-8 h-8 animate-spin text-teal-600" fill="none" viewBox="0 0 24 24">
+            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+          </svg>
+          <p className="text-sm text-slate-500">Setting up your workspace...</p>
+        </div>
+      </div>
+    )
+  }
+
+  if (needsFamilySetup) {
+    return <Navigate to="/family-setup" replace />
+  }
+
+  return <Dashboard />
+}
+
 export default function App() {
   return (
     <Routes>
       <Route path="/login" element={<LoginPage />} />
       <Route path="/signup" element={<SignupPage />} />
+      <Route path="/family-setup" element={<AuthGuard><FamilySetup /></AuthGuard>} />
       <Route path="/profiles" element={<AuthGuard><ProfilesPage /></AuthGuard>} />
-      <Route path="/*" element={<AuthGuard><Dashboard /></AuthGuard>} />
+      <Route path="/*" element={<AuthGuard><ProtectedDashboard /></AuthGuard>} />
     </Routes>
   )
 }
